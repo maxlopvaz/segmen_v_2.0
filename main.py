@@ -1,112 +1,121 @@
-import instaloader
+import requests
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from collections import Counter
+
+# App credentials
+app_id = "500840846254356"
+app_secret = "0aaffe2acd5e594f3452a8e8fef6706b"
+redirect_uri = "https://segmenv20-cdhhkxnhdciwcefkpjjn5u.streamlit.app/"
+auth_url = f"https://api.instagram.com/oauth/authorize?client_id={app_id}&redirect_uri={redirect_uri}&scope=user_profile,user_media&response_type=code"
 
 # Configuración de la aplicación en Streamlit
 st.title("Instagram Account Statistics")
 
-# Entrada del nombre de usuario
-username = st.text_input("Enter the Instagram username:")
+# Paso 1: Instrucciones para autenticación
+st.write(f"1. Haz clic en [este enlace]({auth_url}) para autenticarte y obtener un código.")
+st.write("2. Después de la autenticación, ingresa el código que recibiste.")
 
-# Botón para extraer datos
-if st.button("Get Statistics"):
-    if username:
-        # Cargar el perfil de Instagram
-        L = instaloader.Instaloader()
+# Entrada del código de autenticación después de redirigir al usuario
+auth_code = st.text_input("Introduce el código de autenticación:")
+
+# Botón para intercambiar el código por un token de acceso
+if st.button("Obtener Token de Acceso"):
+    if auth_code:
+        # Paso 2: Intercambiar el código por el token de acceso
+        token_url = "https://api.instagram.com/oauth/access_token"
+        payload = {
+            'client_id': app_id,
+            'client_secret': app_secret,
+            'grant_type': 'authorization_code',
+            'redirect_uri': redirect_uri,
+            'code': auth_code
+        }
+
+        # Solicitar el token de acceso
         try:
-            profile = instaloader.Profile.from_username(L.context, username)
+            response = requests.post(token_url, data=payload)
+            token_data = response.json()
 
-            # Mostrar estadísticas básicas
-            st.write(f"**Username:** {profile.username}")
-            st.write(f"**Full Name:** {profile.full_name}")
-            st.write(f"**Biography:** {profile.biography}")
-            st.write(f"**Number of Posts:** {profile.mediacount}")
-            st.write(f"**Followers:** {profile.followers}")
-            st.write(f"**Following:** {profile.followees}")
-            st.write(f"**External URL:** {profile.external_url}")
+            if 'access_token' in token_data:
+                access_token = token_data['access_token']
+                st.success("Token de acceso obtenido exitosamente.")
+                st.write(f"Token de acceso: {access_token}")
 
-            # Extraer estadísticas adicionales
-            st.write("### Additional Statistics")
+                # Paso 3: Extraer datos del perfil usando el token de acceso
+                profile_url = f"https://graph.instagram.com/me?fields=id,username,media_count,account_type&access_token={access_token}"
+                profile_response = requests.get(profile_url)
+                profile_data = profile_response.json()
 
-            hashtags = []
-            post_types = {'Image': 0, 'Video': 0, 'IGTV': 0}
-            dates = []
-            locations = []
+                if profile_response.status_code == 200:
+                    # Mostrar estadísticas básicas del perfil
+                    st.write(f"**Username:** {profile_data['username']}")
+                    st.write(f"**Media Count:** {profile_data['media_count']}")
+                    st.write(f"**Account Type:** {profile_data['account_type']}")
 
-            for post in profile.get_posts():
-                hashtags.extend(post.caption_hashtags)
-                dates.append(post.date)
+                    # Obtener medios (publicaciones) del usuario
+                    media_url = f"https://graph.instagram.com/me/media?fields=id,caption,media_type,media_url,thumbnail_url,timestamp&access_token={access_token}"
+                    media_response = requests.get(media_url)
+                    media_data = media_response.json()
 
-                if post.typename == 'GraphImage':
-                    post_types['Image'] += 1
-                elif post.typename == 'GraphVideo':
-                    post_types['Video'] += 1
-                elif post.typename == 'GraphSidecar':
-                    post_types['IGTV'] += 1
+                    if 'data' in media_data:
+                        media_list = media_data['data']
 
-                # Extraer la ubicación si está disponible
-                if post.location:
-                    locations.append({
-                        'name': post.location.name,
-                        'lat': post.location.lat,
-                        'lng': post.location.lng
-                    })
+                        # Verificar si hay publicaciones
+                        if len(media_list) == 0:
+                            st.warning("No se encontraron publicaciones.")
+                        else:
+                            # Analizar y mostrar estadísticas de los medios (publicaciones)
+                            captions = []
+                            media_types = {'IMAGE': 0, 'VIDEO': 0, 'CAROUSEL_ALBUM': 0}
+                            timestamps = []
 
-            # Gráfico de barras de los hashtags más usados
-            top_hashtags = Counter(hashtags).most_common(5)
-            top_hashtags_df = pd.DataFrame(top_hashtags, columns=['Hashtag', 'Count'])
-            st.write("**Top Hashtags Used**")
-            fig = px.bar(top_hashtags_df, x='Hashtag', y='Count', title='Top 5 Hashtags')
-            st.plotly_chart(fig)
+                            for media in media_list:
+                                captions.extend(media.get('caption', '').split())
+                                media_type = media.get('media_type', 'UNKNOWN')
+                                if media_type in media_types:
+                                    media_types[media_type] += 1
+                                timestamps.append(media['timestamp'])
 
-            # Listar y graficar los tipos de publicaciones
-            st.write("**Type of Posts**")
-            post_types_df = pd.DataFrame(list(post_types.items()), columns=['Type', 'Count'])
-            fig = px.pie(post_types_df, values='Count', names='Type', title='Distribution of Post Types')
-            st.plotly_chart(fig)
+                            # Mostrar gráfico de tipos de publicaciones
+                            post_types_df = pd.DataFrame(list(media_types.items()), columns=['Type', 'Count'])
+                            st.write("**Distribución de Tipos de Publicaciones**")
+                            fig = px.pie(post_types_df, values='Count', names='Type',
+                                         title='Distribución de Tipos de Publicaciones')
+                            st.plotly_chart(fig)
 
+                            # Mostrar las palabras más comunes en las descripciones (captions)
+                            if captions:
+                                caption_counts = pd.DataFrame(captions, columns=["Word"])
+                                top_words = caption_counts['Word'].value_counts().head(10).reset_index()
+                                top_words.columns = ['Word', 'Count']
 
-            # Análisis de cuentas seguidas y tópicos
-            st.write("### Followed Accounts and Topics")
-            followed_accounts = []
-            topics = []
-            for followee in profile.get_followees():
-                followed_accounts.append(followee.username)
-                if followee.biography:
-                    topics.extend(followee.biography.split())
+                                st.write("**Top 10 Palabras en las Descripciones**")
+                                fig = px.bar(top_words, x='Word', y='Count', title='Top 10 Palabras en Descripciones')
+                                st.plotly_chart(fig)
 
-            # Análisis de tópicos en las biografías de las cuentas seguidas
-            if topics:
-                top_topics = Counter(topics).most_common(10)
-                top_topics_df = pd.DataFrame(top_topics, columns=['Topic', 'Count'])
-                st.write("**Top Topics in Followed Accounts**")
-                fig = px.bar(top_topics_df, x='Topic', y='Count', title='Top Topics in Followed Accounts')
-                st.plotly_chart(fig)
+                            # Mostrar las fechas de las publicaciones
+                            if timestamps:
+                                timestamps_df = pd.DataFrame(timestamps, columns=["Timestamp"])
+                                timestamps_df['Date'] = pd.to_datetime(timestamps_df['Timestamp']).dt.date
+                                date_counts = timestamps_df['Date'].value_counts().reset_index()
+                                date_counts.columns = ['Date', 'Count']
 
-            # Listar las cuentas más influyentes seguidas (mayor número de seguidores)
-            if followed_accounts:
-                followed_accounts_info = [(followee.username, followee.followers) for followee in profile.get_followees()]
-                top_followed_accounts = sorted(followed_accounts_info, key=lambda x: x[1], reverse=True)[:10]
-                top_followed_df = pd.DataFrame(top_followed_accounts, columns=['Username', 'Followers'])
-                st.write("**Top Followed Accounts by Popularity**")
-                st.dataframe(top_followed_df)
+                                st.write("**Frecuencia de Publicaciones por Fecha**")
+                                fig = px.line(date_counts, x='Date', y='Count',
+                                              title='Frecuencia de Publicaciones por Fecha')
+                                st.plotly_chart(fig)
 
-            # Crear mapa de calor de ubicaciones
-            if locations:
-                st.write("**Location Heatmap**")
-                locations_df = pd.DataFrame(locations)
-                fig = px.density_mapbox(locations_df, lat='lat', lon='lng', z=None, radius=10,
-                                        mapbox_style="stamen-terrain", zoom=3,
-                                        title="Location Heatmap of Posts")
-                st.plotly_chart(fig)
+                    else:
+                        st.warning("No se pudieron obtener las publicaciones del perfil.")
+
+                else:
+                    st.error(f"Error al obtener el perfil: {profile_data.get('error', {}).get('message', 'Unknown Error')}")
+
             else:
-                st.write("No locations available for this user.")
+                st.error(f"Error al obtener el token: {token_data.get('error_message', 'Unknown Error')}")
 
-        except instaloader.exceptions.ProfileNotExistsException:
-            st.error("The profile does not exist.")
         except Exception as e:
-            st.error(f"An error occurred: {e}")
+            st.error(f"Error durante el intercambio del código por token: {e}")
     else:
-        st.warning("Please enter a username.")
+        st.warning("Por favor, ingresa el código de autenticación.")
